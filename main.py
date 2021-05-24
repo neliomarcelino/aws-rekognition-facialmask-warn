@@ -11,16 +11,16 @@ from pydub import AudioSegment
 from pydub.playback import play
 
 # Video stream
-videoStreamUrl = "rtsp://10.0.0.1:9000/live"
+videoStreamUrl = "rtsp://10.2.10.2:9000/live"
 
 # CameraID
 cameraId = "01"
 
 # SNS Arn
-snsArn = "SNS::ARN"
+snsArn = "arn:aws:sns:eu-west-1:661516917150:Hygicontrol"
 
 # DynamoDB Table name
-tableDbName = "TABLE_NAME"
+tableDbName = "HygicontrolAnalysis"
 
 # MP3 File
 mp3File = "audio.mp3"
@@ -104,11 +104,9 @@ def processData(response):
                 if len(bodyParts['EquipmentDetections']) > 0:
                     for equipmentDetections in bodyParts['EquipmentDetections']:
                         if equipmentDetections['Type'] == "FACE_COVER":
+                            mask = True
                             if equipmentDetections['CoversBodyPart']['Value'] == True:
-                                mask = True
                                 coverNose = True
-                            else:
-                                coverNose = False
                         
         persons.append({'id': person['Id'], 'mask': mask, 'coverNose': coverNose})
 
@@ -120,12 +118,12 @@ def processData(response):
     num_persons_mask = 0
     try:
         for person in persons:
-            if person['mask'] == True:
-                num_persons_mask += 1
-            elif person['coverNose'] == False:
+            if person['coverNose'] == False and person['mask'] == False:
+                num_persons_no_mask += 1
+            elif person['coverNose'] == False and person['mask'] == True:
                 num_persons_mask_wrong += 1
             else:
-                num_persons_no_mask += 1
+                num_persons_mask += 1
             
     except Exception as e:
         print("Error processing data from request: " + str(e))
@@ -134,7 +132,7 @@ def processData(response):
     return {'num_persons_no_mask': num_persons_no_mask, 'num_persons_mask_wrong': num_persons_mask_wrong, 'num_persons_mask': num_persons_mask}
 
 
-# Process frame from video stream
+## Process frame from video stream
 def processFrame(videoStreamUrl):
     print("Processing frame from video stream...")
     cap = cv2.VideoCapture(videoStreamUrl)
@@ -174,7 +172,7 @@ def processFrame(videoStreamUrl):
     return
 
 
-# Process Text to Speech from data
+## Process Text to Speech from data
 def processTTS(data):
     print("Processing TTS...")
     # Create text
@@ -220,7 +218,7 @@ def processTTS(data):
     file.close()
     return True
 
-# Play audio
+## Play audio
 def playAudio():
     try:
         audio_stream = AudioSegment.from_mp3(mp3File)
@@ -230,7 +228,7 @@ def playAudio():
         print("Could not play audio: " + str(e))
 
 
-# Infinite cycle
+## Infinite cycle
 print("Starting script...")
 while (True):
     try:
