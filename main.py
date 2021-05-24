@@ -3,6 +3,7 @@ import boto3
 import time
 import os
 import sys
+import datetime
 from botocore.exceptions import BotoCoreError, ClientError
 from contextlib import closing
 from tempfile import gettempdir
@@ -10,7 +11,16 @@ from pydub import AudioSegment
 from pydub.playback import play
 
 # Video stream
-videoStreamUrl = "rtsp://10.2.10.2:9000/live"
+videoStreamUrl = "rtsp://10.0.0.1:9000/live"
+
+# CameraID
+cameraId = "01"
+
+# SNS Arn
+snsArn = "SNS::ARN"
+
+# DynamoDB Table name
+tableDbName = "TABLE_NAME"
 
 # MP3 File
 mp3File = "audio.mp3"
@@ -18,9 +28,69 @@ mp3File = "audio.mp3"
 session = boto3.session.Session()
 rekognition = session.client('rekognition')
 polly = session.client('polly')
+sns = session.client('sns')
+dynamodb = boto3.resource('dynamodb')
+dynamodb_table = dynamodb.Table(tableDbName)
+
+## Send notification via SNS
+def sendNotification(data):
+    print("Generating notification...")
+
+    date = datetime.datetime.now()
+    print(date)
+    message_notification = "A Camera " + cameraId + " detetou pessoas que não estão a cumprir as medidas de segurança às " + str(date.strftime("%d/%m/%Y, %H:%M:%S")) + "."
+    message_notification += "\nResultados:"
+    
+    # Persons that are not using mask
+    if data['num_persons_no_mask'] > 0:
+        message_notification += "\n\t- " + str(data['num_persons_no_mask']) 
+        if data['num_persons_no_mask'] == 1:
+            message_notification += " pessoa não está a usar máscara."
+        else:
+            message_notification += " pessoas não estão a usar máscaras."
+
+    # Persons that are not using mask correctly
+    if data['num_persons_mask_wrong'] > 0:
+        message_notification += "\n\t- " + str(data['num_persons_mask_wrong']) 
+        if data['num_persons_mask_wrong'] == 1:
+            message_notification += " pessoa não está a usar máscara correctamente."
+        else:
+            message_notification += " pessoas não estão a usar máscaras correctamente."
+
+    # Persons that are using mask correctly
+    if data['num_persons_mask'] > 0:
+        message_notification += "\n\t- " + str(data['num_persons_mask']) 
+        if data['num_persons_mask'] == 1:
+            message_notification += " pessoa está a usar máscara correctamente."
+        else:
+            message_notification += " pessoas estão a usar máscaras correctamente."
+
+    print("Notification message: ", message_notification)
+
+    response = sns.publish(
+            TopicArn=snsArn,
+            Message=message_notification
+        )
+    print("SNS API response: ", response)
 
 
-# Process data from response
+## Send data to DynamoDB
+def sendAnalysis(data):
+    print("Sending Data to DynamoDB...")
+    
+    try:
+        response = dynamodb_table.put_item(
+            Item={
+                'id': cameraId,
+                'timestamp': int(time.time()),
+                'data': data
+            }
+        )
+    except Exception as e:
+        print("Could not send data to DynamoDB: ", e)
+
+
+## Process data from response
 def processData(response):
     print("Analysing data...")
     persons = []
@@ -34,8 +104,11 @@ def processData(response):
                 if len(bodyParts['EquipmentDetections']) > 0:
                     for equipmentDetections in bodyParts['EquipmentDetections']:
                         if equipmentDetections['Type'] == "FACE_COVER":
-                            mask = True
-                            coverNose = equipmentDetections['CoversBodyPart']['Value']
+                            if equipmentDetections['CoversBodyPart']['Value'] == True:
+                                mask = True
+                                coverNose = True
+                            else:
+                                coverNose = False
                         
         persons.append({'id': person['Id'], 'mask': mask, 'coverNose': coverNose})
 
@@ -49,8 +122,8 @@ def processData(response):
         for person in persons:
             if person['mask'] == True:
                 num_persons_mask += 1
-                if person['coverNose'] == False:
-                    num_persons_mask_wrong += 1
+            elif person['coverNose'] == False:
+                num_persons_mask_wrong += 1
             else:
                 num_persons_no_mask += 1
             
@@ -80,7 +153,7 @@ def processFrame(videoStreamUrl):
                     }
                 )
     cap.release()
-    print("Response: ", response)
+    print("Rekognition Detect Protective Equipment Response: ", response)
 
     if len(response['Persons']) == 0:
         print("There are no persons in front of the camera")
@@ -95,6 +168,8 @@ def processFrame(videoStreamUrl):
         return
     if data['num_persons_no_mask'] > 0 or data['num_persons_mask_wrong'] > 0:
         if processTTS(data):
+            sendNotification(data)
+            sendAnalysis(data)
             playAudio()
     return
 
